@@ -4,6 +4,7 @@ ko-sroberta/
 *.csv
 *.xlsx
 *.xlsm
+*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
