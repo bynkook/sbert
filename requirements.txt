@@ -1,0 +1,5 @@
+sentence_transformers
+hf_xet
+pandas
+faiss-cpu
+matplotlib
