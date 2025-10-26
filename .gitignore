@@ -1,3 +1,10 @@
+# BK added
+test/
+ko-sroberta/
+*.csv
+*.xlsx
+*.xlsm
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
