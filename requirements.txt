@@ -1,5 +1,8 @@
 sentence_transformers
+transformers[torch]
 hf_xet
-pandas
+peft
+Korpora
 faiss-cpu
+pandas
 matplotlib

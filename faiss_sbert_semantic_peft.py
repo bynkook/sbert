@@ -37,6 +37,8 @@ FAISS를 사용해 효율적인 벡터 인덱싱 및 검색을 수행합니다. 
 import os
 os.environ["HF_HUB_OFFLINE"] = "1"
 import re
+import warnings
+warnings.filterwarnings('ignore')
 import pandas as pd
 from sentence_transformers import SentenceTransformer, util
 import torch
@@ -78,9 +80,16 @@ FILE_TASKS = [
     {
         "query_csv": "./data/function_하이테크_.csv",
         "context_csv": "./data/process_하이테크_.csv",
-        "output_csv": "./result/semantic_search_results_하이테크.csv",
-        "index_file": "./result/faiss_index5.ivfflat",
-        "plot_file": "./result/similarity_distribution_하이테크.png"
+        "output_csv": "./result_test/semantic_search_results_하이테크.csv",
+        "index_file": "./result_test/faiss_index5.ivfflat",
+        "plot_file": "./result_test/similarity_distribution_하이테크.png"
+    },
+    {
+        "query_csv": "./data/test_query.csv",
+        "context_csv": "./data/test_context.csv",
+        "output_csv": "./result_test/test_result.csv",
+        "index_file": "./result_test/test.ivfflat",
+        "plot_file": "./result_test/test_similarity.png"
     },
 ]
 BATCH_SIZE = 128
@@ -256,8 +265,22 @@ def semantic_search(file_tasks):
     - GPU 가속 지원.
     - 유사도 분포는 'similarity_distribution.png'에 저장.
     """
-    model_path = './ko-sroberta'    # use offline downloaded model
-    model = SentenceTransformer(model_path)
+    # --- PEFT(LoRA) 모델 로드 방식으로 변경 ---
+    # 1. 원본 기반 모델 경로
+    base_model_path = './ko-sroberta' # 'jhgan/ko-sroberta-multitask'의 로컬 경로
+    # 2. 학습된 PEFT 어댑터 경로
+    peft_path = './output/ko-sroberta-expert-lora'
+
+    print(f"--- 모델 로드 시작 ---")
+    print(f"    Base model: {base_model_path}")
+    print(f"    PEFT adapter: {peft_path}")
+
+    # SentenceTransformer 모델을 로드, PEFT 어댑터 적용
+    model = SentenceTransformer(base_model_path)
+    print(f"--- Base 모델 로드 완료  ---")
+    if peft_path:
+        model.load_adapter(peft_path)
+        print(f"--- PEFT 모델 로드 완료 ---")
 
     for i, task in enumerate(file_tasks):
         required_keys = ["query_csv", "context_csv", "output_csv", "index_file", "plot_file"]
@@ -342,7 +365,7 @@ def semantic_search(file_tasks):
         else:
             print("유사도 값이 없어 시각화를 생략합니다.")
 
-        result_df = pd.DataFrame(result_rows)        
+        result_df = pd.DataFrame(result_rows)
         result_df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
         print(f"총 {len(queries)}개의 query 처리 완료.")
         print(f"저장 경로: {OUTPUT_CSV}")
