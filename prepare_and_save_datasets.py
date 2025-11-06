@@ -1,3 +1,27 @@
+"""
+KorSTS와 도메인 용어 사전을 SentenceTransformers 학습용 포맷으로 전처리하여 저장
+
+개요
+- Korpora에서 KorSTS를 로드하고, 유사도 점수를 0~1 범위로 정규화한 InputExample로 변환한다.
+  (train 세트는 학습용, dev 세트는 평가용으로 사용)
+- 'data/domain_dictionary.csv'에서 ['term', 'definition']를 읽어 용어–정의 쌍 InputExample을 생성한다.
+  (MultipleNegativesRankingLoss 학습에 사용, 라벨 불필요)
+- 세 개의 pickle 파일을 output_folder에 저장:
+  - korsts_train.pkl, korsts_dev.pkl, dict_domain.pkl
+
+출력 파일
+- {output_folder}/korsts_train.pkl
+- {output_folder}/korsts_dev.pkl
+- {output_folder}/dict_domain.pkl
+
+의존성
+- Korpora, pandas, sentence-transformers
+
+주의점
+- Korpora.load('korsts', root_dir='./Korpora') 사용. 로컬에 파일이 있으면 재다운로드를 피하도록 유틸을 수정한 환경을 가정한다.
+- domain_dictionary.csv는 최소 ['term','definition'] 컬럼이 필요하다.
+"""
+
 import pickle
 import pandas as pd
 from Korpora import Korpora
@@ -5,13 +29,29 @@ from sentence_transformers import InputExample
 
 def prepare_and_save_datasets(output_folder="."):
     """
-    KorSTS와 전문 용어 사전 데이터를 로드하여,
-    sentence-transformers 학습에 사용할 수 있는 형태로 전처리하고 파일로 저장합니다.
+    KorSTS와 도메인 용어 사전을 로드하여 SentenceTransformers 학습/평가용 InputExample 리스트로 변환하고 pickle로 저장한다.
 
-    - KorSTS 데이터: STS 학습용 (CosineSimilarityLoss 용)
-    - 전문 용어 사전: 사전 학습용 (MultipleNegativesRankingLoss 용)
+    Args:
+        output_folder (str): 산출물을 저장할 대상 폴더 경로. 존재하지 않으면 사전에 생성해야 한다.
 
-    pip install Korpora pandas sentence-transformers
+    Process:
+        1) Korpora.load('korsts')로 KorSTS 로드.
+           - train → 점수/5.0 정규화 후 InputExample(texts=[s1, s2], label=score)
+           - dev   → 동일 방식으로 검증 세트 생성
+        2) CSV 'data/domain_dictionary.csv' 로드 후 dict(term→definition) 구성.
+           - InputExample(texts=[term, definition]) 목록 생성(라벨 불필요)
+        3) 세 개의 pickle 파일로 저장:
+           - korsts_train.pkl, korsts_dev.pkl, dict_domain.pkl
+
+    Returns:
+        None. (output_folder에 세 개의 .pkl 파일 저장)
+
+    Raises:
+        FileNotFoundError: domain_dictionary.csv를 찾지 못한 경우.
+
+    Notes:
+        - KorSTS train은 현재 스크립트에서 직접 학습에 사용하지 않더라도, 추후 확장 시 재사용 가능하도록 함께 저장한다.
+        - 도메인 사전은 MNRL 학습에서 배치 내 부정 샘플로 작동하므로 규모가 클수록 효과적이다.
     """
     print("--- 데이터셋 준비 및 저장 시작 ---")
 

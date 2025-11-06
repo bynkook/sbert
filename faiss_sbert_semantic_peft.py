@@ -1,38 +1,38 @@
 """
-한국어 텍스트를 위한 SBERT와 FAISS 기반 시맨틱 검색
+한국어 시맨틱 검색 파이프라인 (SBERT + PEFT LoRA + FAISS)
 
-이 스크립트는 SentenceTransformers('jhgan/ko-sroberta-multitask')를 사용해 한국어 텍스트를 고품질 임베딩으로 변환하고,
-FAISS를 사용해 효율적인 벡터 인덱싱 및 검색을 수행합니다. 쿼리 CSV와 컨텍스트 CSV를 입력으로 받아 각 쿼리에 대해 가장 유사한
-상위 k개의 컨텍스트를 찾아 CSV 파일로 결과를 저장합니다. FAISS로 후보를 선별한 후 SBERT로 정밀한 코사인 유사도를 계산하는
-하이브리드 검색 방식을 사용해 정확도와 속도를 모두 최적화합니다. 추가로, 유사도 값 분포를 막대그래프로 시각화하여 저장합니다.
+개요
+- SentenceTransformers 기반 한국어 임베딩 모델(로컬 './ko-sroberta')에 학습된 PEFT(LoRA) 어댑터('./output/ko-sroberta-lora')를
+  토치 오토모델 레벨에서 부착(PeftModel.from_pretrained)한 뒤, Pooling을 결합하여 최종 SentenceTransformer 파이프라인을 구성한다.
+- 컨텍스트 텍스트에 대해 임베딩을 생성하고, FAISS IndexIVFFlat으로 근사 최근접 이웃 검색을 수행한다.
+- FAISS로 선별된 후보에 대해 SBERT 코사인 유사도를 재계산하는 하이브리드 방식으로 정확도를 보강한다.
+- 여러 입력 파일 세트(FILE_TASKS)를 순차 처리하고, 검색 결과 CSV와 유사도 분포 그래프를 파일로 저장한다.
 
-주요 기능:
-- 'jhgan/ko-sroberta-multitask' 모델로 한국어 임베딩 생성 (KLUE-STS 점수 ~85%).
-- FAISS 'IndexIVFFlat'으로 높은 정확도의 근사 최근접 이웃(ANN) 검색.
-- 하이브리드 검색: FAISS로 상위 10개 후보 선별 후 SBERT로 정확한 코사인 유사도 계산.
-- 데이터 크기에 따라 동적으로 'nprobe' 조정해 정확도와 속도 균형 유지.
-- 유사도 임계값(0.5)을 설정해 낮은 신뢰도의 결과 필터링.
-- 유사도 값 분포를 구간별(0.7 이상, 0.6~0.7, 0.5~0.6, 0.4~0.5, 0.4 이하) 막대그래프로 시각화.
+입력 포맷
+- 쿼리 CSV: 최소 컬럼 ['system', '업무기능', 'context'] 필요.
+- 컨텍스트 CSV: 최소 컬럼 ['code', 'contexts'] 필요.
+  추가로 ['pr_lv1_nm', ..., 'pr_lv5_nm']가 있을 경우 마지막 비공백 레벨명을 'pr_nm'으로 사용한다.
 
-입력:
-- 'function_query_context.csv': 쿼리 csv 파일 (컬럼: ['system', '업무기능', 'context', 'menu_lv1_nm', ...]).
-- 'process_embedding_contexts.csv': 컨텍스트 csv 파일 (컬럼: ['code', 'contexts', 'pr_lv1_nm', ...]).
+핵심 파라미터
+- BATCH_SIZE: 임베딩 배치 크기.
+- SIMILARITY_THRESHOLD: 최종 출력에 포함할 최소 코사인 유사도.
+- TOPK_CANDIDATES: FAISS로 선별할 후보 개수.
+- TOPK_OUTPUT: 최종 CSV에 기록할 상위 결과 개수.
+- NLIST_MIN: IVF 클러스터 최소 개수. 데이터 크기에 따라 동적으로 산정.
+- NPROBE_MIN: 검색 시 probing 최소 개수. 코드상 min(NPROBE_MIN, 200)로 설정.
 
-출력:
-- 'semantic_search_results.csv': 쿼리 메타데이터, 상위 5개 매칭 결과, 유사도 점수, 컨텍스트 정보 포함.
-- 'similarity_distribution.png': 유사도 값 분포를 나타내는 막대그래프.
+출력
+- 각 파일 세트에 대해:
+  - 결과 CSV: 쿼리 메타데이터, 상위 매칭 결과, 유사도 점수, 컨텍스트 정보.
+  - 유사도 분포 그래프 PNG.
 
-의존성:
-- sentence-transformers
-- pandas
-- numpy
-- torch
-- faiss-cpu (GPU 지원 시 faiss-gpu)
-- matplotlib (유사도 분포 시각화용)
+설계상의 주의점
+- 어댑터 로딩은 SentenceTransformer.load_adapter가 아닌, 오토모델 단계의 PeftModel.from_pretrained를 사용한다.
+- normalize_embeddings=True로 임베딩을 생성해 코사인 유사도와 Inner Product가 정합되도록 유지한다.
+- FAISS 인덱스와 임베딩을 디스크에 저장/재사용하여 반복 실행 비용을 절감한다.
 
-사용법:
-    # 입력 CSV 파일과 모델 경로('./ko-sroberta')가 준비되어 있어야 합니다.
-    # 결과는 './semantic_search_results.csv'와 './similarity_distribution.png'에 저장됩니다.
+의존성
+- sentence-transformers, peft, torch, faiss-cpu(or faiss-gpu), pandas, numpy, matplotlib, tqdm
 """
 import os
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -40,11 +40,13 @@ import re
 import warnings
 warnings.filterwarnings('ignore')
 import pandas as pd
-from sentence_transformers import SentenceTransformer, util
-import torch
 import numpy as np
+from sentence_transformers import SentenceTransformer, util, models
+from peft import PeftModel
+import torch
 import faiss
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 
 # 파일 세트 목록 (각 세트별로 입력/출력/인덱스/그래프 파일 경로를 통합)
@@ -138,8 +140,8 @@ def build_faiss_index(model, contexts_text, index_file=None):
     numpy.ndarray
         컨텍스트 임베딩 배열 (N x 768).
     """
-    embeddings = []
-    for i in range(0, len(contexts_text), BATCH_SIZE):
+    embeddings = []    
+    for i in tqdm(range(0, len(contexts_text), BATCH_SIZE), desc="Building FAISS Index", ncols=100, colour='green'):        
         batch = contexts_text[i:i + BATCH_SIZE]
         batch_emb = model.encode(batch, convert_to_tensor=True, normalize_embeddings=True).cpu().numpy()
         embeddings.append(batch_emb)
@@ -269,24 +271,32 @@ def semantic_search(file_tasks):
     # 1. 원본 기반 모델 경로
     base_model_path = './ko-sroberta' # 'jhgan/ko-sroberta-multitask'의 로컬 경로
     # 2. 학습된 PEFT 어댑터 경로
-    peft_path = './output/ko-sroberta-expert-lora'
+    peft_path = './output/ko-sroberta-lora'
 
-    print(f"--- 모델 로드 시작 ---")
-    print(f"    Base model: {base_model_path}")
-    print(f"    PEFT adapter: {peft_path}")
+    print(f"- 모델 로드 시작 -")
+    print(f"  Base model: {base_model_path}")
+    print(f"  PEFT adapter: {peft_path}")
 
-    # SentenceTransformer 모델을 로드, PEFT 어댑터 적용
-    model = SentenceTransformer(base_model_path)
-    print(f"--- Base 모델 로드 완료  ---")
+    # 1) 베이스 Transformer 로드
+    word_embedding_model = models.Transformer(base_model_path)
+    
+    # 2) PEFT 어댑터 부착
     if peft_path:
-        model.load_adapter(peft_path)
-        print(f"--- PEFT 모델 로드 완료 ---")
+        word_embedding_model.auto_model = PeftModel.from_pretrained(
+            word_embedding_model.auto_model, peft_path
+        )
+        print(f"- PEFT 어댑터 부착 완료 -")
+    
+    # 3) Pooling 결합해 SentenceTransformer 구성
+    pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension())
+    model = SentenceTransformer(modules=[word_embedding_model, pooling_model])
+    print(f"- Base+PEFT SentenceTransformer 구성 완료 -")
 
     for i, task in enumerate(file_tasks):
         required_keys = ["query_csv", "context_csv", "output_csv", "index_file", "plot_file"]
         for k in required_keys:
             if k not in task:
-                raise ValueError(f"{i+1}번째 파일 세트에 '{k}' 키가 없습니다.")
+                raise ValueError(f"ERROR: {i+1}번째 파일 세트에 '{k}' 키가 없습니다.")
 
         QUERY_CSV = task["query_csv"]
         CONTEXT_CSV = task["context_csv"]
@@ -298,7 +308,7 @@ def semantic_search(file_tasks):
         os.makedirs(os.path.dirname(INDEX_FILE), exist_ok=True)
         os.makedirs(os.path.dirname(PLOT_FILE), exist_ok=True)
 
-        print(f"\n==== {i+1}번째 파일셋 처리 ====")
+        print(f"\n==== {i+1}번째 파일셋 처리 ====\n")
         queries_df = load_queries(QUERY_CSV)
         queries = queries_df['context'].tolist()
         contexts_df = load_contexts(CONTEXT_CSV)
@@ -312,12 +322,12 @@ def semantic_search(file_tasks):
             index, corpus_embeddings = load_faiss_index(index_file=INDEX_FILE)
 
         nlist = index.nlist
-        index.nprobe = min(NPROBE_MIN, nlist // 5)
-        print(f'INFO : nlist(number of cluster centroids) = {nlist}')
-        print(f'INFO : nProbe(number of probing clusters) = {index.nprobe}')
+        index.nprobe = min(NPROBE_MIN, 200)
+        print(f'INFO: nlist(number of cluster centroids) = {nlist}')
+        print(f'INFO: nProbe(number of probing clusters) = {index.nprobe}')
 
         q_emb_list = []
-        for j in range(0, len(queries), BATCH_SIZE):
+        for j in tqdm(range(0, len(queries), BATCH_SIZE), desc="Embedding Generation", ncols=100, colour='green'):
             batch = queries[j:j + BATCH_SIZE]
             batch_emb = model.encode(batch, convert_to_tensor=True, normalize_embeddings=True).cpu().numpy().astype('float32')
             q_emb_list.append(batch_emb)
@@ -326,7 +336,7 @@ def semantic_search(file_tasks):
         result_rows = []
         similarity_scores = []
         corpus_emb_tensor = torch.from_numpy(corpus_embeddings).to(torch.float32)
-        for qi in range(len(queries)):
+        for qi in tqdm(range(len(queries)), desc="Processing Queries", ncols=100, colour='green'):
             q_emb_tensor = torch.from_numpy(q_emb[qi:qi+1]).to(torch.float32)
             D, I = index.search(q_emb[qi:qi+1], k=TOPK_CANDIDATES)
             candidate_idx = I[0]
@@ -337,7 +347,7 @@ def semantic_search(file_tasks):
             top_indices = candidate_idx[sorted_indices]
             for rank, (ci, score) in enumerate(zip(top_indices, top_scores)):
                 if ci == -1 or score < SIMILARITY_THRESHOLD:
-                    print(f'WARNING: 예측에 실패했거나 threshold(0.5) 이하입니다.  query no.= {qi}, ci= {ci}, score= {score}')
+                    print(f'WARNING: 예측에 실패했거나 threshold({SIMILARITY_THRESHOLD:.1f}) 이하입니다.  query no.= {qi}, ci= {ci}, score= {score}')
                     # continue      # 점수가 낮아도 출력
                 similarity_scores.append(score)
                 result_rows.append({
@@ -356,6 +366,11 @@ def semantic_search(file_tasks):
                     "code": contexts_df.iloc[ci]["code"],
                     "pr_nm": pr_nm.iloc[ci],
                     "pr_context": contexts_df.iloc[ci]["contexts"],
+                    "pr_lv1_nm": contexts_df.iloc[ci]["pr_lv1_nm"],
+                    "pr_lv2_nm": contexts_df.iloc[ci]["pr_lv2_nm"],
+                    "pr_lv3_nm": contexts_df.iloc[ci]["pr_lv3_nm"],
+                    "pr_lv4_nm": contexts_df.iloc[ci]["pr_lv4_nm"],
+                    "pr_lv5_nm": contexts_df.iloc[ci]["pr_lv5_nm"],                    
                     "menu_id": queries_df.iloc[qi]["menu_id"],
                     "program_id": queries_df.iloc[qi]["program_id"],
                 })
